@@ -108,13 +108,20 @@ def sgemm_smem(A, B, C, M, N, K):
     (BK3, BN3) for Bs.
     Use 0.0 in the SMEM load when the global index is out of bounds.
     """
+    # Shared memory
     As = cuda.shared.array((BM3, BK3), float32) # 32x32 tile of A
     Bs = cuda.shared.array((BK3, BN3), float32) # 32x32 tile of B
 
     tx = cuda.threadIdx.x
+
+    # Block row and col
     local_row, local_col = tx // BN3, tx % BN3
+
+    # Grid row and col
     row = cuda.blockIdx.x * BM3 + local_row
     col = cuda.blockIdx.y * BN3 + local_col
+
+    # Accumulator
     acc = float32(0.0)
 
     for kt in range(0, K, BK3):
@@ -154,7 +161,56 @@ def sgemm_1d_tile(A, B, C, M, N, K):
     Use cuda.local.array(TM4, float32) for the per-thread accumulator array.
     Initialize all entries to 0.0 before the K-loop.
     """
-    # TODO
+    # Shared memory
+    As = cuda.shared.array((BM4, BK4), float32)                     # 64x8 tile
+    Bs = cuda.shared.array((BK4, BN4), float32)                     # 8x64 tile
+
+    tx = cuda.threadIdx.x                                           # 0...511
+
+    # A indices within block
+    a_row = tx % BM4                                                # 0...63
+    a_col = tx // BM4                                               # 0...7
+    # A grid row index
+    a_global_row = cuda.blockIdx.y * BM4 + a_row                    # [0, 63]. [64, 127]...
+
+    # B indices within block
+    b_row = tx // BN4                                               # 0...7
+    b_col = tx % BN4                                                # 0...63
+    # B grid col index
+    b_global_col = cuda.blockIdx.x * BN4 + b_col                    # [0, 63], [64, 127]...
+
+    # Thread starting indices
+    thread_row_start = (tx // BN4) * TM4                            # 0, 8, 16, ... , 56
+    thread_col = tx % BN4                                           # 0...63
+    # C grid indices for writing
+    c_global_row_start = cuda.blockIdx.y * BM4 + thread_row_start
+    c_global_col = cuda.blockIdx.x * BN4 + thread_col
+
+    # Accumulator array
+    acc = cuda.local.array(TM4, float32)
+
+    # Initialize accumulators
+    for i in range(TM4):
+        acc[i] = float32(0.0)
+
+    for kt in range(0, K, BK4):
+        # Load chunks into shared memory
+        As[a_row, a_col] = A[a_global_row, kt + a_col] if a_global_row < M and kt + a_col < K else 0.0
+        Bs[b_row, b_col] = B[kt + b_row, b_global_col] if b_global_col < N and kt + b_row < K else 0.0
+        cuda.syncthreads()
+
+        # Iterate through A's cols in block, B's rows in block
+        for dk in range(BK4):
+            # Iterate through A's col elements and multiple by a single B value
+            for i in range(TM4):
+                acc[i] += As[thread_row_start + i, dk] * Bs[dk, thread_col]
+            cuda.syncthreads()
+
+    # Write to C
+    for i in range(TM4):
+        if c_global_row_start + i < M and c_global_col < N:
+            C[c_global_row_start + i, c_global_col] = acc[i]
+
     return
 
 
@@ -179,7 +235,6 @@ def sgemm_2d_tile(A, B, C, M, N, K):
     For accumulators, use cuda.local.array((TM5, TN5), float32).
     Numba supports tuple-shaped local arrays!
     """
-    # TODO
     return
 
 
