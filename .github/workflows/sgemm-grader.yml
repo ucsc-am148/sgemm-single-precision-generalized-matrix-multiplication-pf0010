@@ -6,7 +6,7 @@
 # from this template; the workflow runs on every push to main against
 # THAT student's repo, with secrets inherited from the Classroom.
 #
-# Submission cap: 5 graded runs per repo (= per student). We count past
+# Submission cap: 20 graded runs per repo (= per student). We count past
 # commit comments tagged with the marker below. The cap is per-Classroom-
 # repo: a fresh accept gives a fresh count.
 #
@@ -40,7 +40,7 @@ jobs:
     env:
       MARKER: "<!-- sgemm-autograder-result -->"
       CAP_MARKER: "<!-- sgemm-autograder-cap -->"
-      MAX_SUBMISSIONS: 5
+      MAX_SUBMISSIONS: 20
       REPO: ${{ github.repository }}
       SHA: ${{ github.sha }}
 
