@@ -168,8 +168,8 @@ def sgemm_1d_tile(A, B, C, M, N, K):
     tx = cuda.threadIdx.x                                           # 0...511
 
     # A indices within block
-    a_row = tx % BM4                                                # 0...63
-    a_col = tx // BM4                                               # 0...7
+    a_row = tx // BK4                                               # 0...63
+    a_col = tx % BK4                                                # 0...7
     # A grid row index
     a_global_row = cuda.blockIdx.y * BM4 + a_row                    # [0, 63]. [64, 127]...
 
@@ -195,16 +195,24 @@ def sgemm_1d_tile(A, B, C, M, N, K):
 
     for kt in range(0, K, BK4):
         # Load chunks into shared memory
-        As[a_row, a_col] = A[a_global_row, kt + a_col] if a_global_row < M and kt + a_col < K else 0.0
-        Bs[b_row, b_col] = B[kt + b_row, b_global_col] if b_global_col < N and kt + b_row < K else 0.0
+        As[a_row, a_col] = A[a_global_row, kt + a_col] if a_global_row < M and kt + a_col < K else float32(0.0)
+        Bs[b_row, b_col] = B[kt + b_row, b_global_col] if b_global_col < N and kt + b_row < K else float32(0.0)
         cuda.syncthreads()
 
         # Iterate through A's cols in block, B's rows in block
         for dk in range(BK4):
+            b_value = Bs[dk, thread_col]
             # Iterate through A's col elements and multiple by a single B value
-            for i in range(TM4):
-                acc[i] += As[thread_row_start + i, dk] * Bs[dk, thread_col]
-            cuda.syncthreads()
+            acc[0] += As[thread_row_start + 0, dk] * b_value
+            acc[1] += As[thread_row_start + 1, dk] * b_value
+            acc[2] += As[thread_row_start + 2, dk] * b_value
+            acc[3] += As[thread_row_start + 3, dk] * b_value
+            acc[4] += As[thread_row_start + 4, dk] * b_value
+            acc[5] += As[thread_row_start + 5, dk] * b_value
+            acc[6] += As[thread_row_start + 6, dk] * b_value
+            acc[7] += As[thread_row_start + 7, dk] * b_value
+
+        cuda.syncthreads()
 
     # Write to C
     for i in range(TM4):
