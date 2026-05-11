@@ -243,7 +243,85 @@ def sgemm_2d_tile(A, B, C, M, N, K):
     For accumulators, use cuda.local.array((TM5, TN5), float32).
     Numba supports tuple-shaped local arrays!
     """
+    As = cuda.shared.array((BM5, BK5), float32)                     # 128x8 tile
+    Bs = cuda.shared.array((BK5, BN5), float32)                     # 8x128 tile
+
+    tx = cuda.threadIdx.x
+
+    # A indices within block
+    a_row = tx // BK5                                               # 0...127
+    a_col = tx % BK5                                                # 0...7
+    a_stride = 256 // BK5
+    a_global_row_base = cuda.blockIdx.y * BM5 + a_row
+
+    # B indices within block
+    b_row = tx // BN5                                               # 0...7
+    b_col = tx % BN5                                                # 0...127
+    b_stride = 256 // BN5
+    b_global_col = cuda.blockIdx.x * BN5 + b_col
+
+    # Thread starting indices
+    thread_row_start = (tx // 16) * TM5                            # 0, 8, 16, ... , 56
+    thread_col = tx % 16 * TN5
+    # C grid indices for writing
+    c_global_row_start = cuda.blockIdx.y * BM5 + thread_row_start
+    c_global_col = cuda.blockIdx.x * BN5 + thread_col
+
+    # Accumulator array
+    acc = cuda.local.array((TM5, TN5), float32)
+
+    #Initialize accumulators
+    for i in range(TM5):
+        for j in range(TN5):
+            acc[i, j] = float32(0.0)
+
+    # Loads
+    a_reg = cuda.local.array(TM5, float32)
+    b_reg = cuda.local.array(TN5, float32)
+
+    for kt in range(0, K, BK5):
+        for off in range(0, BM5, a_stride):
+            a_global_row = a_global_row_base + off
+            As[a_row + off, a_col] = A[a_global_row, kt + a_col] if a_global_row < M and kt + a_col < K else float32(0.0)
+
+        for off in range(0, BK5, b_stride):
+            Bs[b_row + off, b_col] = B[kt + b_row + off, b_global_col] if b_global_col < N and kt + b_row + off < K else float32(0.0)
+
+        cuda.syncthreads()
+
+        for dk in range(BK5):
+            for i in range(TM5):
+                a_reg[i] = As[thread_row_start + i, dk]
+            for j in range(TN5):
+                b_reg[j] = Bs[dk, thread_col + j]
+            for i in range(TM5):
+                for j in range(TN5):
+                    acc[i, j] += a_reg[i] * b_reg[j]
+
+        cuda.syncthreads()
+
+    for i in range(TM5):
+        for j in range(TN5):
+            r = c_global_row_start + i
+            c = c_global_col + j
+
+            if r < M and c < N:
+                    C[r, c] = acc[i, j]
+
     return
+
+    """
+    For each chunk of K (size 8):
+
+      1. Every thread cooperatively loads its 4 A elements (with bounds checks if needed).
+      2. Every thread cooperatively loads its 4 B elements.
+      3. Synchronize so the full tiles are visible.
+      4. For each of the 8 inner-K steps:
+        - Cache 8 A values into registers.
+        - Cache 8 B values into registers.
+        - Do the 8 × 8 outer-product update on the 64 accumulators.
+      5. Synchronize before overwriting the shared tiles in the next chunk.
+    """
 
 
 # ── Launch wrappers (provided — do not edit) ────────────────────────
